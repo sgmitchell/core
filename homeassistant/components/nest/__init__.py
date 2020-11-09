@@ -196,20 +196,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
     )
 
-    config = hass.data[DOMAIN][DATA_NEST_CONFIG]
-
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
     auth = api.AsyncConfigEntryAuth(
         aiohttp_client.async_get_clientsession(hass),
         session,
         API_URL,
     )
-    subscriber = GoogleNestSubscriber(
-        auth, config[CONF_PROJECT_ID], config[CONF_SUBSCRIBER_ID]
-    )
-    subscriber.set_update_callback(SignalUpdateCallback(hass))
-    asyncio.create_task(subscriber.start_async())
-    hass.data[DOMAIN][entry.entry_id] = subscriber
+
+    await create_subscriber(hass, entry, auth)
+    asyncio.create_task(watch_and_restart_subscriber(hass, entry, auth))
 
     for component in PLATFORMS:
         hass.async_create_task(
@@ -217,6 +212,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
 
     return True
+
+
+async def create_subscriber(hass: HomeAssistant, entry: ConfigEntry, auth: api.AbstractAuth):
+    config = hass.data[DOMAIN][DATA_NEST_CONFIG]
+    subscriber = GoogleNestSubscriber(
+        auth, config[CONF_PROJECT_ID], config[CONF_SUBSCRIBER_ID]
+    )
+    subscriber.set_update_callback(SignalUpdateCallback(hass))
+    await subscriber.start_async()
+    hass.data[DOMAIN][entry.entry_id] = subscriber
+
+
+async def watch_and_restart_subscriber(hass: HomeAssistant, entry: ConfigEntry, auth: api.AbstractAuth):
+    """Create and start new subscriber. Once it's created, watch for the subscriber to close"""
+    while True:
+        subscriber = hass.data[DOMAIN][entry.entry_id]
+        if subscriber and subscriber._future.done():
+            _LOGGER.error('subscriber done. restarting')
+            await create_subscriber(hass, entry, auth)
+        await asyncio.sleep(5)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
